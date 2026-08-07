@@ -1,68 +1,846 @@
-import Image from "next/image";
+"use client";
+
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  Castle,
+  Church,
+  Crosshair,
+  Goal,
+  Landmark,
+  Layers,
+  Loader2,
+  MapPin,
+  Navigation,
+  PawPrint,
+  Plane,
+  Route as RouteIcon,
+  Search,
+  ShoppingBasket,
+  TrainFront,
+  Trash2,
+  Trophy,
+  Waves,
+  X,
+  type LucideIcon,
+} from "lucide-react";
+
+import { GoogleMap } from "@/components/google-map";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import {
+  getCategory,
+  initialPoints,
+  PLACE_CATEGORIES,
+  type PlaceAutocompleteItem,
+  type PlaceCategoryId,
+  type PlacePoint,
+} from "@/lib/places";
+import { cn } from "@/lib/utils";
+
+const CATEGORY_ICONS: Record<PlaceCategoryId, LucideIcon> = {
+  aeropuerto: Plane,
+  tren: TrainFront,
+  animales: PawPrint,
+  cultural: Landmark,
+  monumento: Castle,
+  religiones: Church,
+  playa: Waves,
+  mercados: ShoppingBasket,
+  deportes: Trophy,
+  barca: Goal,
+};
+
+function haversineKm(
+  a: { lat: number; lng: number },
+  b: { lat: number; lng: number },
+) {
+  const R = 6371;
+  const dLat = ((b.lat - a.lat) * Math.PI) / 180;
+  const dLng = ((b.lng - a.lng) * Math.PI) / 180;
+  const la1 = (a.lat * Math.PI) / 180;
+  const la2 = (b.lat * Math.PI) / 180;
+  const h =
+    Math.sin(dLat / 2) ** 2 +
+    Math.cos(la1) * Math.cos(la2) * Math.sin(dLng / 2) ** 2;
+  return 2 * R * Math.asin(Math.sqrt(h));
+}
+
+function formatKm(km: number) {
+  return km < 10 ? `${km.toFixed(1)} km` : `${Math.round(km)} km`;
+}
+
+function formatDuration(seconds: number) {
+  const mins = Math.round(seconds / 60);
+  if (mins < 60) return `${mins} min`;
+  return `${Math.floor(mins / 60)} h ${mins % 60} min`;
+}
+
+type TabButtonProps = {
+  icon: LucideIcon;
+  label: string;
+  active: boolean;
+  onClick: () => void;
+};
+
+function TabButton({ icon: Icon, label, active, onClick }: TabButtonProps) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={cn(
+        "flex flex-col items-center gap-1 rounded-md py-2 text-xs font-medium transition-colors",
+        active
+          ? "bg-accent text-foreground"
+          : "text-muted-foreground hover:bg-muted hover:text-foreground",
+      )}
+    >
+      <Icon className="size-4" />
+      {label}
+    </button>
+  );
+}
+
+type PlaceListItemProps = {
+  point: PlacePoint;
+  index: number;
+  selected: boolean;
+  onSelect: (point: PlacePoint) => void;
+  onRemove: (id: string) => void;
+  onCenter: (point: PlacePoint) => void;
+};
+
+function PlaceListItem({
+  point,
+  index,
+  selected,
+  onSelect,
+  onRemove,
+  onCenter,
+}: PlaceListItemProps) {
+  const category = getCategory(point.category);
+  const CategoryIcon = CATEGORY_ICONS[point.category];
+  return (
+    <div
+      onClick={() => onSelect(point)}
+      className={cn(
+        "group flex cursor-pointer items-start gap-2.5 rounded-lg border p-2.5 transition-colors",
+        selected
+          ? "border-primary/40 bg-accent"
+          : "border-transparent hover:bg-muted",
+      )}
+    >
+      <div
+        className="mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full text-[10px] font-semibold text-white"
+        style={{ backgroundColor: category.color }}
+      >
+        {index + 1}
+      </div>
+      <div className="min-w-0 flex-1">
+        <p className="truncate text-sm font-medium">{point.nameEs}</p>
+        <p className="truncate text-xs text-muted-foreground">{point.nameCa}</p>
+        <p className="mt-0.5 flex items-center gap-1 text-[11px] text-muted-foreground/70">
+          <CategoryIcon className="size-3 shrink-0" style={{ color: category.color }} />
+          {category.label}
+          {point.address ? ` · ${point.address}` : ""}
+        </p>
+      </div>
+      <div className="flex shrink-0 items-center gap-0.5 opacity-0 transition-opacity group-hover:opacity-100">
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label={`Centrar ${point.nameEs}`}
+          onClick={(e) => {
+            e.stopPropagation();
+            onCenter(point);
+          }}
+        >
+          <Crosshair className="size-3.5" />
+        </Button>
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          aria-label={`Eliminar ${point.nameEs}`}
+          className="text-destructive hover:bg-destructive/10 hover:text-destructive"
+          onClick={(e) => {
+            e.stopPropagation();
+            onRemove(point.id);
+          }}
+        >
+          <Trash2 className="size-3.5" />
+        </Button>
+      </div>
+    </div>
+  );
+}
 
 export default function Home() {
+  const [points, setPoints] = useState<PlacePoint[]>(initialPoints);
+  const [query, setQuery] = useState("");
+  const [suggestions, setSuggestions] = useState<PlaceAutocompleteItem[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
+  const [searching, setSearching] = useState(false);
+  const [addingId, setAddingId] = useState<string | null>(null);
+  const [selectedId, setSelectedId] = useState<string | null>(null);
+  const [searchError, setSearchError] = useState<string | null>(null);
+  const [newPointCategory, setNewPointCategory] =
+    useState<PlaceCategoryId>("cultural");
+
+  const [activeTab, setActiveTab] = useState<"ubicaciones" | "categorias" | "rutas">(
+    "ubicaciones",
+  );
+  const [categoryFilter, setCategoryFilter] = useState<PlaceCategoryId | null>(
+    null,
+  );
+
+  const [routeMode, setRouteMode] = useState(false);
+  const [routeStartId, setRouteStartId] = useState<string | null>(null);
+  const [routeCount, setRouteCount] = useState(5);
+  const [routePath, setRoutePath] = useState<google.maps.LatLngLiteral[] | null>(
+    null,
+  );
+  const [routeSummary, setRouteSummary] = useState<{
+    distanceMeters: number;
+    durationSeconds: number;
+  } | null>(null);
+  const [routeError, setRouteError] = useState<string | null>(null);
+
+  const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(
+    () => () => {
+      if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    },
+    [],
+  );
+
+  const filteredPoints = useMemo(() => {
+    const q = query.trim().toLowerCase();
+    return points.filter(
+      (point) =>
+        (!categoryFilter || point.category === categoryFilter) &&
+        (!q ||
+          point.nameEs.toLowerCase().includes(q) ||
+          point.nameCa.toLowerCase().includes(q)),
+    );
+  }, [points, query, categoryFilter]);
+
+  const categoryCounts = useMemo(() => {
+    const counts = {} as Record<PlaceCategoryId, number>;
+    for (const category of PLACE_CATEGORIES) counts[category.id] = 0;
+    for (const point of points) {
+      counts[point.category] = (counts[point.category] ?? 0) + 1;
+    }
+    return counts;
+  }, [points]);
+
+  const routeData = useMemo(() => {
+    if (!routeMode || !routeStartId || routeCount < 2) return null;
+    const start = points.find((point) => point.id === routeStartId);
+    if (!start) return null;
+    const nearest = points
+      .filter((point) => point.id !== start.id)
+      .map((point) => ({ point, distKm: haversineKm(start, point) }))
+      .sort((a, b) => a.distKm - b.distKm)
+      .slice(0, routeCount);
+    return { start, nearest };
+  }, [routeMode, routeStartId, routeCount, points]);
+
+  const routeLoading = routeData !== null && !routePath && !routeError;
+
+  const routePointIds = useMemo(() => {
+    if (!routeData) return [];
+    return [
+      routeData.start.id,
+      ...routeData.nearest.map((item) => item.point.id),
+    ];
+  }, [routeData]);
+
+  useEffect(() => {
+    if (!routeData) return;
+    const { start, nearest } = routeData;
+    let cancelled = false;
+
+    const destinations = nearest
+      .map((item) => `${item.point.lat},${item.point.lng}`)
+      .join("|");
+
+    (async () => {
+      try {
+        const res = await fetch(
+          `/api/directions?origin=${start.lat},${start.lng}&destinations=${encodeURIComponent(destinations)}`,
+        );
+        const data = await res.json();
+        if (cancelled) return;
+        if (!res.ok || !data.path) {
+          setRoutePath(null);
+          setRouteSummary(null);
+          setRouteError(
+            "No se pudo calcular la ruta por calles. Revisa que la Directions API esté habilitada.",
+          );
+          return;
+        }
+        setRoutePath(data.path);
+        setRouteSummary({
+          distanceMeters: data.distanceMeters,
+          durationSeconds: data.durationSeconds,
+        });
+        setRouteError(null);
+      } catch {
+        if (cancelled) return;
+        setRoutePath(null);
+        setRouteSummary(null);
+        setRouteError("No se pudo calcular la ruta por calles.");
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [routeData]);
+
+  const handleSearchChange = (value: string) => {
+    setQuery(value);
+    const q = value.trim();
+    if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    if (q.length < 2) {
+      setSuggestions([]);
+      setSearching(false);
+      setShowSuggestions(false);
+      return;
+    }
+    setSearching(true);
+    searchTimeoutRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch(`/api/places?input=${encodeURIComponent(q)}`);
+        const data = await res.json();
+        if (!res.ok) {
+          throw new Error(data.error ?? "Error al buscar lugares");
+        }
+        setSuggestions(data.suggestions ?? []);
+        setShowSuggestions(true);
+        setSearchError(null);
+      } catch (err) {
+        setSuggestions([]);
+        setSearchError(
+          err instanceof Error ? err.message : "Error al buscar lugares",
+        );
+      } finally {
+        setSearching(false);
+      }
+    }, 350);
+  };
+
+  const focusPoint = useCallback((point: PlacePoint) => {
+    setSelectedId(point.id);
+  }, []);
+
+  const handleItemSelect = (point: PlacePoint) => {
+    setSelectedId(point.id);
+    if (routeMode) {
+      setRouteStartId(point.id);
+      setRoutePath(null);
+      setRouteSummary(null);
+      setRouteError(null);
+    }
+  };
+
+  const addPoint = async (suggestion: PlaceAutocompleteItem) => {
+    setAddingId(suggestion.placeId);
+    setSearchError(null);
+    try {
+      const res = await fetch(
+        `/api/places?place_id=${encodeURIComponent(suggestion.placeId)}`,
+      );
+      const data = await res.json();
+      if (!res.ok) {
+        throw new Error(data.error ?? "Error al obtener las coordenadas");
+      }
+      const point: PlacePoint = {
+        id: crypto.randomUUID(),
+        category: newPointCategory,
+        nameEs: data.name,
+        nameCa: data.name,
+        address: data.address,
+        lat: data.lat,
+        lng: data.lng,
+        placeId: data.placeId,
+      };
+      setPoints((prev) => [...prev, point]);
+      setQuery("");
+      setSuggestions([]);
+      setSelectedId(point.id);
+    } catch (err) {
+      setSearchError(
+        err instanceof Error ? err.message : "Error al agregar el punto",
+      );
+    } finally {
+      setAddingId(null);
+    }
+  };
+
+  const removePoint = (id: string) => {
+    setPoints((prev) => prev.filter((point) => point.id !== id));
+    setSelectedId((prev) => (prev === id ? null : prev));
+    setRouteStartId((prev) => (prev === id ? null : prev));
+    setRoutePath(null);
+    setRouteSummary(null);
+    setRouteError(null);
+  };
+
+  const handleMapSelect = (point: PlacePoint) => {
+    setSelectedId(point.id);
+    if (routeMode) {
+      setRouteStartId(point.id);
+      setRoutePath(null);
+      setRouteSummary(null);
+      setRouteError(null);
+    }
+  };
+
+  const toggleRouteMode = () => {
+    const next = !routeMode;
+    setRouteMode(next);
+    if (!next) {
+      setRouteStartId(null);
+      setRoutePath(null);
+      setRouteSummary(null);
+      setRouteError(null);
+    }
+  };
+
+  const clearAll = () => {
+    setPoints([]);
+    setQuery("");
+    setSuggestions([]);
+    setSelectedId(null);
+    setRouteMode(false);
+    setRouteStartId(null);
+    setRoutePath(null);
+    setRouteSummary(null);
+    setRouteError(null);
+  };
+
+  const toggleCategory = (id: PlaceCategoryId) => {
+    setCategoryFilter((prev) => (prev === id ? null : id));
+  };
+
+  const activeCategory = categoryFilter ? getCategory(categoryFilter) : null;
+
   return (
-    <div className="flex flex-col flex-1 items-center justify-center bg-zinc-50 font-sans dark:bg-black">
-      <main className="flex flex-1 w-full max-w-3xl flex-col items-center justify-between py-32 px-16 bg-white dark:bg-black sm:items-start">
-        <Image
-          className="dark:invert h-5 w-[100px]"
-          src="/next.svg"
-          alt="Next.js logo"
-          width={100}
-          height={20}
-          priority
-        />
-        <div className="flex flex-col items-center gap-6 text-center sm:items-start sm:text-left">
-          <h1 className="max-w-xs text-3xl font-semibold leading-10 tracking-tight text-black dark:text-zinc-50">
-            To get started, edit the{" "}
-            <code className="rounded bg-black/[.06] px-1.5 py-0.5 font-mono text-[0.9em] dark:bg-white/[.08]">
-              page.tsx
-            </code>{" "}
-            file.
-          </h1>
-          <p className="max-w-md text-lg leading-8 text-zinc-600 dark:text-zinc-400">
-            Looking for a starting point or more instructions? Head over to{" "}
-            <a
-              href="https://vercel.com/templates?framework=next.js&utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Templates
-            </a>{" "}
-            or the{" "}
-            <a
-              href="https://nextjs.org/learn?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-              className="font-medium text-zinc-950 dark:text-zinc-50"
-            >
-              Learning
-            </a>{" "}
-            center.
+    <div className="flex h-dvh w-full flex-col overflow-hidden bg-background md:flex-row">
+      <aside className="flex h-1/2 w-full flex-col border-b bg-card md:h-full md:w-[26rem] md:shrink-0 md:border-r md:border-b-0">
+        <div className="flex items-center justify-between border-b px-4 py-3">
+          <div>
+            <h1 className="text-sm font-semibold">Puntos de ruta</h1>
+            <p className="text-xs text-muted-foreground">
+              Barcelona · lugares turísticos
+            </p>
+          </div>
+          <Badge variant="secondary">{points.length}</Badge>
+        </div>
+
+        <div className="grid grid-cols-3 gap-1 border-b p-2">
+          <TabButton
+            icon={MapPin}
+            label="Ubicaciones"
+            active={activeTab === "ubicaciones"}
+            onClick={() => setActiveTab("ubicaciones")}
+          />
+          <TabButton
+            icon={Layers}
+            label="Categorías"
+            active={activeTab === "categorias"}
+            onClick={() => setActiveTab("categorias")}
+          />
+          <TabButton
+            icon={RouteIcon}
+            label="Rutas"
+            active={activeTab === "rutas"}
+            onClick={() => setActiveTab("rutas")}
+          />
+        </div>
+
+        {activeTab === "ubicaciones" && (
+          <div className="border-b p-3">
+            <div className="relative">
+              <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={query}
+                onChange={(e) => handleSearchChange(e.target.value)}
+                onFocus={() => suggestions.length > 0 && setShowSuggestions(true)}
+                onBlur={() => setTimeout(() => setShowSuggestions(false), 150)}
+                placeholder="Buscar lugar (mín. 2 caracteres)..."
+                className="pr-8 pl-8"
+                aria-label="Buscar lugar"
+              />
+              {searching && (
+                <Loader2 className="absolute top-1/2 right-2.5 size-4 -translate-y-1/2 animate-spin text-muted-foreground" />
+              )}
+            </div>
+
+            {showSuggestions && suggestions.length > 0 && (
+              <div className="absolute z-20 mt-1 w-[calc(100%-1.5rem)] overflow-hidden rounded-lg border bg-popover text-popover-foreground shadow-lg">
+                <ul className="py-1">
+                  {suggestions.map((suggestion) => (
+                    <li key={suggestion.placeId}>
+                      <button
+                        type="button"
+                        onMouseDown={(e) => e.preventDefault()}
+                        onClick={() => addPoint(suggestion)}
+                        disabled={addingId === suggestion.placeId}
+                        className="flex w-full cursor-pointer items-center gap-2 px-3 py-2 text-left text-sm transition-colors hover:bg-accent disabled:pointer-events-none disabled:opacity-60"
+                      >
+                        <MapPin className="size-4 shrink-0 text-muted-foreground" />
+                        <span className="line-clamp-2">
+                          {suggestion.description}
+                        </span>
+                        {addingId === suggestion.placeId && (
+                          <Loader2 className="ml-auto size-4 shrink-0 animate-spin" />
+                        )}
+                      </button>
+                    </li>
+                  ))}
+                </ul>
+              </div>
+            )}
+
+            <label className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
+              <span className="shrink-0">Categoría al añadir:</span>
+              <select
+                value={newPointCategory}
+                onChange={(e) =>
+                  setNewPointCategory(e.target.value as PlaceCategoryId)
+                }
+                className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2 text-sm text-foreground"
+              >
+                {PLACE_CATEGORIES.map((category) => (
+                  <option key={category.id} value={category.id}>
+                    {category.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+
+            {searchError && (
+              <p className="mt-2 text-xs text-destructive">{searchError}</p>
+            )}
+
+            {activeCategory && (
+              <div className="mt-2 flex items-center gap-2">
+                <Badge
+                  className="text-white"
+                  style={{ backgroundColor: activeCategory.color }}
+                >
+                  {activeCategory.label}
+                </Badge>
+                <button
+                  type="button"
+                  onClick={() => setCategoryFilter(null)}
+                  className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+                >
+                  <X className="size-3" />
+                  Quitar filtro
+                </button>
+              </div>
+            )}
+          </div>
+        )}
+
+        <ScrollArea className="min-h-0 flex-1">
+          {activeTab === "ubicaciones" && (
+            <div className="flex flex-col gap-1 p-3">
+              {points.length === 0 ? (
+                <div className="flex flex-col items-center gap-2 py-10 text-center text-muted-foreground">
+                  <MapPin className="size-8" />
+                  <p className="text-sm">Sin puntos todavía</p>
+                  <p className="text-xs">Busca un lugar arriba para agregarlo</p>
+                </div>
+              ) : filteredPoints.length === 0 ? (
+                <p className="py-10 text-center text-sm text-muted-foreground">
+                  Sin resultados
+                </p>
+              ) : (
+                filteredPoints.map((point, index) => (
+                  <PlaceListItem
+                    key={point.id}
+                    point={point}
+                    index={index}
+                    selected={selectedId === point.id}
+                    onSelect={handleItemSelect}
+                    onRemove={removePoint}
+                    onCenter={focusPoint}
+                  />
+                ))
+              )}
+            </div>
+          )}
+
+          {activeTab === "categorias" && (
+            <div className="flex flex-col gap-3 p-3">
+              <div className="flex items-center justify-between">
+                <p className="text-xs text-muted-foreground">
+                  Agrupa los lugares por categoría
+                </p>
+                {categoryFilter && (
+                  <button
+                    type="button"
+                    onClick={() => setCategoryFilter(null)}
+                    className="flex items-center gap-1 text-xs font-medium text-primary hover:underline"
+                  >
+                    <X className="size-3" />
+                    Todas
+                  </button>
+                )}
+              </div>
+
+              <div className="grid grid-cols-1 gap-1.5">
+                {PLACE_CATEGORIES.map((category) => {
+                  const Icon = CATEGORY_ICONS[category.id];
+                  const selected = categoryFilter === category.id;
+                  const count = categoryCounts[category.id] ?? 0;
+                  return (
+                    <button
+                      key={category.id}
+                      type="button"
+                      onClick={() => toggleCategory(category.id)}
+                      className={cn(
+                        "flex items-center gap-2.5 rounded-lg border px-3 py-2 text-left transition-colors",
+                        selected
+                          ? "border-primary/50 bg-accent"
+                          : "border-transparent hover:bg-muted",
+                      )}
+                    >
+                      <span
+                        className="flex size-7 shrink-0 items-center justify-center rounded-full text-white"
+                        style={{ backgroundColor: category.color }}
+                      >
+                        <Icon className="size-4" />
+                      </span>
+                      <span className="min-w-0 flex-1">
+                        <span className="block truncate text-sm font-medium">
+                          {category.label}
+                        </span>
+                        <span className="block truncate text-[11px] text-muted-foreground">
+                          {category.description}
+                        </span>
+                      </span>
+                      <Badge variant="secondary">{count}</Badge>
+                    </button>
+                  );
+                })}
+              </div>
+
+              {activeCategory ? (
+                <div className="flex flex-col gap-1 border-t pt-3">
+                  <p className="pb-1 text-xs font-medium">
+                    Lugares de{" "}
+                    <span style={{ color: activeCategory.color }}>
+                      {activeCategory.label}
+                    </span>
+                  </p>
+                  {points
+                    .filter((point) => point.category === categoryFilter)
+                    .map((point, index) => (
+                      <PlaceListItem
+                        key={point.id}
+                        point={point}
+                        index={index}
+                        selected={selectedId === point.id}
+                        onSelect={handleItemSelect}
+                        onRemove={removePoint}
+                        onCenter={focusPoint}
+                      />
+                    ))}
+                </div>
+              ) : (
+                <p className="py-6 text-center text-xs text-muted-foreground">
+                  Selecciona una categoría para ver sus lugares
+                </p>
+              )}
+            </div>
+          )}
+
+          {activeTab === "rutas" && (
+            <div className="flex flex-col gap-3 p-3">
+              <Button
+                type="button"
+                variant={routeMode ? "default" : "outline"}
+                className={routeMode ? "bg-emerald-600 hover:bg-emerald-700" : ""}
+                onClick={toggleRouteMode}
+              >
+                <Navigation className="size-4" />
+                {routeMode
+                  ? "Modo rutas activo"
+                  : "Activar modo rutas cercanas"}
+              </Button>
+
+              {!routeMode ? (
+                <p className="py-4 text-center text-xs text-muted-foreground">
+                  Activa el modo para elegir un punto de inicio y descubrir los
+                  lugares más cercanos a visitar.
+                </p>
+              ) : (
+                <>
+                  <p className="text-xs text-muted-foreground">
+                    Selecciona el punto de inicio y cuántos lugares cercanos
+                    quieres visitar. La línea del mapa seguirá las calles.
+                  </p>
+
+                  <label className="flex flex-col gap-1.5">
+                    <span className="text-xs font-medium">Punto de inicio</span>
+                    <select
+                      value={routeStartId ?? ""}
+                      onChange={(e) => {
+                        setRouteStartId(e.target.value || null);
+                        setRoutePath(null);
+                        setRouteSummary(null);
+                        setRouteError(null);
+                      }}
+                      className="h-9 rounded-md border bg-background px-2 text-sm"
+                    >
+                      <option value="">Selecciona un punto...</option>
+                      {points.map((point) => (
+                        <option key={point.id} value={point.id}>
+                          {point.nameEs}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label className="flex flex-col gap-1.5">
+                    <span className="text-xs font-medium">
+                      Número de lugares cercanos
+                    </span>
+                    <select
+                      value={routeCount}
+                      onChange={(e) => {
+                        setRouteCount(Number(e.target.value));
+                        setRoutePath(null);
+                        setRouteSummary(null);
+                        setRouteError(null);
+                      }}
+                      className="h-9 rounded-md border bg-background px-2 text-sm"
+                    >
+                      {[2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
+                        <option key={n} value={n}>
+                          {n} lugares
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  {routeLoading && (
+                    <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                      <Loader2 className="size-3.5 animate-spin" />
+                      Calculando ruta...
+                    </p>
+                  )}
+
+                  {routeError && (
+                    <p className="text-xs text-destructive">{routeError}</p>
+                  )}
+
+                  {!routeStartId && !routeLoading && (
+                    <p className="text-xs text-muted-foreground">
+                      También puedes hacer clic en un punto de la lista o del
+                      mapa para usarlo como inicio.
+                    </p>
+                  )}
+
+                  {routeData && (
+                    <div className="flex flex-col gap-1">
+                      <p className="text-xs font-medium">
+                        Desde{" "}
+                        <span className="text-emerald-600">
+                          {routeData.start.nameEs}
+                        </span>
+                        , los {routeData.nearest.length} más cercanos:
+                      </p>
+                      {routeData.nearest.map((item, index) => (
+                        <div
+                          key={item.point.id}
+                          onClick={() => {
+                            setSelectedId(item.point.id);
+                          }}
+                          className={cn(
+                            "flex cursor-pointer items-center gap-2 rounded-lg border p-2 transition-colors",
+                            selectedId === item.point.id
+                              ? "border-primary/40 bg-accent"
+                              : "border-transparent hover:bg-muted",
+                          )}
+                        >
+                          <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-[10px] font-semibold text-white">
+                            {index + 1}
+                          </span>
+                          <div className="min-w-0 flex-1">
+                            <p className="truncate text-sm">
+                              {item.point.nameEs}
+                            </p>
+                            <p className="truncate text-xs text-muted-foreground">
+                              {item.point.nameCa}
+                            </p>
+                          </div>
+                          <span className="shrink-0 text-xs text-muted-foreground">
+                            {formatKm(item.distKm)}
+                          </span>
+                        </div>
+                      ))}
+
+                      {routeSummary && (
+                        <div className="mt-1 flex items-center justify-between rounded-lg bg-muted px-3 py-2 text-xs">
+                          <span className="text-muted-foreground">
+                            Ruta andando (por calles)
+                          </span>
+                          <span className="font-medium">
+                            {(routeSummary.distanceMeters / 1000).toFixed(1)} km
+                            {" · "}
+                            {formatDuration(routeSummary.durationSeconds)}
+                          </span>
+                        </div>
+                      )}
+
+                      <p className="mt-1 text-[11px] text-muted-foreground/70">
+                        Las distancias de la lista son en línea recta; la línea
+                        del mapa sigue las calles.
+                      </p>
+                    </div>
+                  )}
+                </>
+              )}
+            </div>
+          )}
+        </ScrollArea>
+
+        <div className="flex items-center justify-between border-t px-4 py-2">
+          <p className="text-xs text-muted-foreground">
+            {routeMode
+              ? "Haz clic en un punto para usarlo como inicio"
+              : "Haz clic en un punto para centrarlo"}
           </p>
-        </div>
-        <div className="flex flex-col gap-4 text-base font-medium sm:flex-row">
-          <a
-            className="flex h-12 w-full items-center justify-center gap-2 rounded-full bg-foreground px-5 text-background transition-colors hover:bg-[#383838] dark:hover:bg-[#ccc] md:w-[158px]"
-            href="https://vercel.com/new?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            disabled={points.length === 0}
+            onClick={clearAll}
           >
-            <Image
-              className="dark:invert h-[14px] w-4"
-              src="/vercel.svg"
-              alt="Vercel logomark"
-              width={16}
-              height={14}
-            />
-            Deploy Now
-          </a>
-          <a
-            className="flex h-12 w-full items-center justify-center rounded-full border border-solid border-black/[.08] px-5 transition-colors hover:border-transparent hover:bg-black/[.04] dark:border-white/[.145] dark:hover:bg-[#1a1a1a] md:w-[158px]"
-            href="https://nextjs.org/docs?utm_source=create-next-app&utm_medium=appdir-template-tw&utm_campaign=create-next-app"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            Documentation
-          </a>
+            Limpiar
+          </Button>
         </div>
+      </aside>
+
+      <main className="relative h-1/2 w-full md:h-full md:flex-1">
+        <GoogleMap
+          points={filteredPoints}
+          selectedId={selectedId}
+          onSelect={handleMapSelect}
+          routePath={routePath}
+          routePointIds={routePointIds}
+        />
       </main>
     </div>
   );
