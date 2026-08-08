@@ -245,12 +245,43 @@ export default function Home() {
     durationSeconds: number;
   } | null>(null);
   const [routeError, setRouteError] = useState<string | null>(null);
+  const [myPosition, setMyPosition] = useState<{
+    lat: number;
+    lng: number;
+  } | null>(null);
+  const [locatingMe, setLocatingMe] = useState(false);
+  const [locationError, setLocationError] = useState<string | null>(null);
 
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(
     () => () => {
       if (searchTimeoutRef.current) clearTimeout(searchTimeoutRef.current);
+    },
+    [],
+  );
+
+  const requestMyLocation = useCallback(
+    (onError?: () => void) => {
+      if (!("geolocation" in navigator)) {
+        setLocationError("Tu navegador no soporta geolocalización");
+        onError?.();
+        return;
+      }
+      setLocatingMe(true);
+      setLocationError(null);
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          setMyPosition({ lat: pos.coords.latitude, lng: pos.coords.longitude });
+          setLocatingMe(false);
+        },
+        () => {
+          setLocatingMe(false);
+          setLocationError("No se pudo obtener tu ubicación");
+          onError?.();
+        },
+        { enableHighAccuracy: true, timeout: 10000, maximumAge: 60000 },
+      );
     },
     [],
   );
@@ -277,7 +308,20 @@ export default function Home() {
 
   const routeData = useMemo(() => {
     if (!routeStartId || routeCount < 2) return null;
-    const start = points.find((point) => point.id === routeStartId);
+    const start =
+      routeStartId === "me"
+        ? myPosition
+          ? {
+              id: "me",
+              category: "cultural" as PlaceCategoryId,
+              nameEs: "Mi ubicación",
+              nameCa: "La meva ubicació",
+              address: "Tu posición actual",
+              lat: myPosition.lat,
+              lng: myPosition.lng,
+            }
+          : null
+        : points.find((point) => point.id === routeStartId);
     if (!start) return null;
 
     if (routeSubMode === "cercania") {
@@ -306,7 +350,7 @@ export default function Home() {
       current = best.point;
     }
     return { start, nearest: chain };
-  }, [routeStartId, routeCount, routeSubMode, points]);
+  }, [routeStartId, routeCount, routeSubMode, points, myPosition]);
 
   const routeLoading =
     routeSubMode === "trayecto" && routeData !== null && !routePath && !routeError;
@@ -500,6 +544,22 @@ export default function Home() {
     setRoutePath(null);
     setRouteSummary(null);
     setRouteError(null);
+  };
+
+  const handleStartChange = (value: string) => {
+    setRoutePath(null);
+    setRouteSummary(null);
+    setRouteError(null);
+    if (value !== "me") {
+      setRouteStartId(value || null);
+      return;
+    }
+    if (myPosition) {
+      setRouteStartId("me");
+      return;
+    }
+    setRouteStartId("me");
+    requestMyLocation(() => setRouteStartId(null));
   };
 
   const handleTabChange = (
@@ -810,15 +870,13 @@ export default function Home() {
                 <span className="text-xs font-medium">Punto de inicio</span>
                 <select
                   value={routeStartId ?? ""}
-                  onChange={(e) => {
-                    setRouteStartId(e.target.value || null);
-                    setRoutePath(null);
-                    setRouteSummary(null);
-                    setRouteError(null);
-                  }}
+                  onChange={(e) => handleStartChange(e.target.value)}
                   className="h-9 rounded-md border bg-background px-2 text-sm"
                 >
                   <option value="">Selecciona un punto...</option>
+                  <option value="me">
+                    {locatingMe ? "Obteniendo tu ubicación..." : "Yo (mi ubicación)"}
+                  </option>
                   {points.map((point) => (
                     <option key={point.id} value={point.id}>
                       {point.nameEs}
@@ -826,6 +884,10 @@ export default function Home() {
                   ))}
                 </select>
               </label>
+
+              {locationError && (
+                <p className="text-xs text-destructive">{locationError}</p>
+              )}
 
               <label className="flex flex-col gap-1.5">
                 <span className="text-xs font-medium">
@@ -980,6 +1042,9 @@ export default function Home() {
           routePointIds={routePointIds}
           routeCircles={routeCircles}
           hideLabels={hideLabels}
+          myPosition={myPosition}
+          locatingMe={locatingMe}
+          onLocateMe={requestMyLocation}
         />
       </main>
     </div>

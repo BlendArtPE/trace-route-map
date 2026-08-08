@@ -3,7 +3,7 @@
 /// <reference types="google.maps" />
 
 import { importLibrary, setOptions } from "@googlemaps/js-api-loader";
-import { Loader2 } from "lucide-react";
+import { Loader2, LocateFixed } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { getCategory, type PlacePoint } from "@/lib/places";
@@ -34,6 +34,9 @@ type GoogleMapProps = {
     radii: number[];
   } | null;
   hideLabels?: boolean;
+  myPosition?: google.maps.LatLngLiteral | null;
+  locatingMe?: boolean;
+  onLocateMe?: () => void;
 };
 
 function pinContent(
@@ -85,6 +88,9 @@ export function GoogleMap({
   routePointIds = [],
   routeCircles = null,
   hideLabels = false,
+  myPosition = null,
+  locatingMe = false,
+  onLocateMe,
 }: GoogleMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<google.maps.Map | null>(null);
@@ -95,6 +101,7 @@ export function GoogleMap({
   const routeCirclesRef = useRef<google.maps.Polygon[] | null>(null);
   const fittedRef = useRef(false);
   const onSelectRef = useRef(onSelect);
+  const pendingLocateRef = useRef(false);
 
   const [mapReady, setMapReady] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
@@ -300,6 +307,19 @@ export function GoogleMap({
     if ((map.getZoom() ?? 12) < 13) map.setZoom(13);
   }, [mapReady, points, selectedId]);
 
+  useEffect(() => {
+    if (!mapReady || !mapRef.current || !myPosition) return;
+    if (!pendingLocateRef.current) return;
+    pendingLocateRef.current = false;
+    const map = mapRef.current;
+    map.panTo(myPosition);
+    if ((map.getZoom() ?? 12) < 15) map.setZoom(15);
+  }, [mapReady, myPosition]);
+
+  useEffect(() => {
+    if (!locatingMe && !myPosition) pendingLocateRef.current = false;
+  }, [locatingMe, myPosition]);
+
   return (
     <div className="relative h-full w-full">
       <div ref={containerRef} className="h-full w-full" />
@@ -326,6 +346,24 @@ export function GoogleMap({
           </p>
         </div>
       ) : null}
+      {apiKey && mapReady && !loadError && (
+        <button
+          type="button"
+          onClick={() => {
+            pendingLocateRef.current = true;
+            onLocateMe?.();
+          }}
+          className="absolute right-3 bottom-3 z-10 flex size-9 items-center justify-center rounded-md border border-border bg-white text-foreground shadow-md transition-colors hover:bg-gray-100"
+          aria-label="Ir a mi ubicación"
+          title="Ir a mi ubicación"
+        >
+          {locatingMe ? (
+            <Loader2 className="size-4 animate-spin" />
+          ) : (
+            <LocateFixed className="size-4" />
+          )}
+        </button>
+      )}
     </div>
   );
 }
