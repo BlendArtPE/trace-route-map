@@ -9,6 +9,7 @@ import { useEffect, useRef, useState } from "react";
 import { getCategory, type PlacePoint } from "@/lib/places";
 
 const apiKey = process.env.NEXT_PUBLIC_GOOGLE_MAPS_API_KEY;
+const mapId = process.env.NEXT_PUBLIC_GOOGLE_MAPS_ID_KEY;
 
 const BARCELONA_CENTER: google.maps.LatLngLiteral = {
   lat: 41.3874,
@@ -122,7 +123,7 @@ export function GoogleMap({
         const map = new mapsLib.Map(containerRef.current, {
           center: BARCELONA_CENTER,
           zoom: 13,
-          mapId: "DEMO_MAP_ID",
+          mapId: mapId,
           gestureHandling: "greedy",
           mapTypeControl: true,
           fullscreenControl: true,
