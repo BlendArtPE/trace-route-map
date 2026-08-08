@@ -13,6 +13,7 @@ import {
   Navigation,
   PawPrint,
   Plane,
+  Radar,
   Route as RouteIcon,
   Search,
   ShoppingBasket,
@@ -98,6 +99,39 @@ function TabButton({ icon: Icon, label, active, onClick }: TabButtonProps) {
     >
       <Icon className="size-4" />
       {label}
+    </button>
+  );
+}
+
+type LabeledSwitchProps = {
+  label: string;
+  checked: boolean;
+  onChange: (checked: boolean) => void;
+};
+
+function LabeledSwitch({ label, checked, onChange }: LabeledSwitchProps) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      onClick={() => onChange(!checked)}
+      className="flex w-full items-center justify-between gap-2 text-left text-xs text-muted-foreground"
+    >
+      <span className="min-w-0">{label}</span>
+      <span
+        className={cn(
+          "relative h-5 w-9 shrink-0 rounded-full transition-colors",
+          checked ? "bg-primary" : "bg-input",
+        )}
+      >
+        <span
+          className={cn(
+            "absolute top-0.5 left-0.5 size-4 rounded-full bg-white shadow transition-transform",
+            checked && "translate-x-4",
+          )}
+        />
+      </span>
     </button>
   );
 }
@@ -196,7 +230,11 @@ export default function Home() {
     null,
   );
 
-  const [routeMode, setRouteMode] = useState(false);
+  const [routeSubMode, setRouteSubMode] = useState<"cercania" | "trayecto">(
+    "cercania",
+  );
+  const [hideOthers, setHideOthers] = useState(false);
+  const [hideLabels, setHideLabels] = useState(false);
   const [routeStartId, setRouteStartId] = useState<string | null>(null);
   const [routeCount, setRouteCount] = useState(5);
   const [routePath, setRoutePath] = useState<google.maps.LatLngLiteral[] | null>(
@@ -238,18 +276,40 @@ export default function Home() {
   }, [points]);
 
   const routeData = useMemo(() => {
-    if (!routeMode || !routeStartId || routeCount < 2) return null;
+    if (!routeStartId || routeCount < 2) return null;
     const start = points.find((point) => point.id === routeStartId);
     if (!start) return null;
-    const nearest = points
-      .filter((point) => point.id !== start.id)
-      .map((point) => ({ point, distKm: haversineKm(start, point) }))
-      .sort((a, b) => a.distKm - b.distKm)
-      .slice(0, routeCount);
-    return { start, nearest };
-  }, [routeMode, routeStartId, routeCount, points]);
 
-  const routeLoading = routeData !== null && !routePath && !routeError;
+    if (routeSubMode === "cercania") {
+      const nearest = points
+        .filter((point) => point.id !== start.id)
+        .map((point) => ({ point, distKm: haversineKm(start, point) }))
+        .sort((a, b) => a.distKm - b.distKm)
+        .slice(0, routeCount);
+      return { start, nearest };
+    }
+
+    const chain: { point: PlacePoint; distKm: number }[] = [];
+    const remaining = new Set(points.map((point) => point.id));
+    remaining.delete(start.id);
+    let current = start;
+    for (let i = 0; i < routeCount; i++) {
+      let best: { point: PlacePoint; distKm: number } | null = null;
+      for (const point of points) {
+        if (!remaining.has(point.id)) continue;
+        const distKm = haversineKm(current, point);
+        if (!best || distKm < best.distKm) best = { point, distKm };
+      }
+      if (!best) break;
+      chain.push(best);
+      remaining.delete(best.point.id);
+      current = best.point;
+    }
+    return { start, nearest: chain };
+  }, [routeStartId, routeCount, routeSubMode, points]);
+
+  const routeLoading =
+    routeSubMode === "trayecto" && routeData !== null && !routePath && !routeError;
 
   const routePointIds = useMemo(() => {
     if (!routeData) return [];
@@ -259,10 +319,44 @@ export default function Home() {
     ];
   }, [routeData]);
 
+  const routeCircles = useMemo(() => {
+    if (routeSubMode !== "cercania" || !routeData) return null;
+    if (routeData.nearest.length === 0) return null;
+    const distances = routeData.nearest.map((item) => item.distKm);
+    const nearestKm = Math.min(...distances);
+    const farthestKm = Math.max(...distances);
+    return {
+      center: { lat: routeData.start.lat, lng: routeData.start.lng },
+      radii: [nearestKm * 1000, farthestKm * 1000],
+    };
+  }, [routeSubMode, routeData]);
+
+  const mapPoints = useMemo(() => {
+    if (activeTab === "ubicaciones" && hideOthers && selectedId) {
+      const selected = filteredPoints.find((point) => point.id === selectedId);
+      if (selected) return [selected];
+    }
+    if (activeTab === "rutas" && routeData) {
+      return [
+        routeData.start,
+        ...routeData.nearest.map((item) => item.point),
+      ];
+    }
+    return filteredPoints;
+  }, [activeTab, hideOthers, selectedId, filteredPoints, routeData]);
+
   useEffect(() => {
-    if (!routeData) return;
+    if (routeSubMode !== "trayecto" || !routeData) return;
     const { start, nearest } = routeData;
     let cancelled = false;
+
+    const straightPath = [
+      { lat: start.lat, lng: start.lng },
+      ...nearest.map((item) => ({
+        lat: item.point.lat,
+        lng: item.point.lng,
+      })),
+    ];
 
     const destinations = nearest
       .map((item) => `${item.point.lat},${item.point.lng}`)
@@ -276,10 +370,10 @@ export default function Home() {
         const data = await res.json();
         if (cancelled) return;
         if (!res.ok || !data.path) {
-          setRoutePath(null);
+          setRoutePath(straightPath);
           setRouteSummary(null);
           setRouteError(
-            "No se pudo calcular la ruta por calles. Revisa que la Directions API esté habilitada.",
+            "Directions API no disponible; mostrando línea recta entre los puntos.",
           );
           return;
         }
@@ -291,16 +385,16 @@ export default function Home() {
         setRouteError(null);
       } catch {
         if (cancelled) return;
-        setRoutePath(null);
+        setRoutePath(straightPath);
         setRouteSummary(null);
-        setRouteError("No se pudo calcular la ruta por calles.");
+        setRouteError("No se pudo calcular la ruta por calles; mostrando línea recta.");
       }
     })();
 
     return () => {
       cancelled = true;
     };
-  }, [routeData]);
+  }, [routeData, routeSubMode]);
 
   const handleSearchChange = (value: string) => {
     setQuery(value);
@@ -340,7 +434,7 @@ export default function Home() {
 
   const handleItemSelect = (point: PlacePoint) => {
     setSelectedId(point.id);
-    if (routeMode) {
+    if (activeTab === "rutas") {
       setRouteStartId(point.id);
       setRoutePath(null);
       setRouteSummary(null);
@@ -393,7 +487,7 @@ export default function Home() {
 
   const handleMapSelect = (point: PlacePoint) => {
     setSelectedId(point.id);
-    if (routeMode) {
+    if (activeTab === "rutas") {
       setRouteStartId(point.id);
       setRoutePath(null);
       setRouteSummary(null);
@@ -401,15 +495,24 @@ export default function Home() {
     }
   };
 
-  const toggleRouteMode = () => {
-    const next = !routeMode;
-    setRouteMode(next);
-    if (!next) {
+  const switchRouteSubMode = (mode: "cercania" | "trayecto") => {
+    setRouteSubMode(mode);
+    setRoutePath(null);
+    setRouteSummary(null);
+    setRouteError(null);
+  };
+
+  const handleTabChange = (
+    tab: "ubicaciones" | "categorias" | "rutas",
+  ) => {
+    setActiveTab(tab);
+    if (tab !== "rutas") {
       setRouteStartId(null);
       setRoutePath(null);
       setRouteSummary(null);
       setRouteError(null);
     }
+    if (tab !== "categorias") setCategoryFilter(null);
   };
 
   const clearAll = () => {
@@ -417,7 +520,8 @@ export default function Home() {
     setQuery("");
     setSuggestions([]);
     setSelectedId(null);
-    setRouteMode(false);
+    setHideOthers(false);
+    setHideLabels(false);
     setRouteStartId(null);
     setRoutePath(null);
     setRouteSummary(null);
@@ -433,14 +537,23 @@ export default function Home() {
   return (
     <div className="flex h-dvh w-full flex-col overflow-hidden bg-background md:flex-row">
       <aside className="flex h-1/2 w-full flex-col border-b bg-card md:h-full md:w-[26rem] md:shrink-0 md:border-r md:border-b-0">
-        <div className="flex items-center justify-between border-b px-4 py-3">
-          <div>
-            <h1 className="text-sm font-semibold">Puntos de ruta</h1>
-            <p className="text-xs text-muted-foreground">
-              Barcelona · lugares turísticos
-            </p>
+        <div className="border-b px-4 py-3">
+          <div className="flex items-center justify-between">
+            <div>
+              <h1 className="text-sm font-semibold">Puntos de ruta</h1>
+              <p className="text-xs text-muted-foreground">
+                Barcelona · lugares turísticos
+              </p>
+            </div>
+            <Badge variant="secondary">{points.length}</Badge>
           </div>
-          <Badge variant="secondary">{points.length}</Badge>
+          <div className="mt-2">
+            <LabeledSwitch
+              label="Ocultar nombres de otros lugares"
+              checked={hideLabels}
+              onChange={setHideLabels}
+            />
+          </div>
         </div>
 
         <div className="grid grid-cols-3 gap-1 border-b p-2">
@@ -448,19 +561,19 @@ export default function Home() {
             icon={MapPin}
             label="Ubicaciones"
             active={activeTab === "ubicaciones"}
-            onClick={() => setActiveTab("ubicaciones")}
+            onClick={() => handleTabChange("ubicaciones")}
           />
           <TabButton
             icon={Layers}
             label="Categorías"
             active={activeTab === "categorias"}
-            onClick={() => setActiveTab("categorias")}
+            onClick={() => handleTabChange("categorias")}
           />
           <TabButton
             icon={RouteIcon}
             label="Rutas"
             active={activeTab === "rutas"}
-            onClick={() => setActiveTab("rutas")}
+            onClick={() => handleTabChange("rutas")}
           />
         </div>
 
@@ -524,6 +637,12 @@ export default function Home() {
                 ))}
               </select>
             </label>
+
+            <LabeledSwitch
+              label="Ocultar los demás puntos al seleccionar"
+              checked={hideOthers}
+              onChange={setHideOthers}
+            />
 
             {searchError && (
               <p className="mt-2 text-xs text-destructive">{searchError}</p>
@@ -666,150 +785,186 @@ export default function Home() {
 
           {activeTab === "rutas" && (
             <div className="flex flex-col gap-3 p-3">
-              <Button
-                type="button"
-                variant={routeMode ? "default" : "outline"}
-                className={routeMode ? "bg-emerald-600 hover:bg-emerald-700" : ""}
-                onClick={toggleRouteMode}
-              >
-                <Navigation className="size-4" />
-                {routeMode
-                  ? "Modo rutas activo"
-                  : "Activar modo rutas cercanas"}
-              </Button>
+              <div className="flex flex-col gap-1.5">
+                <span className="text-xs font-medium">Tipo de ruta</span>
+                <div className="grid grid-cols-2 gap-1.5">
+                  <Button
+                    type="button"
+                    variant={routeSubMode === "cercania" ? "default" : "outline"}
+                    onClick={() => switchRouteSubMode("cercania")}
+                    className={
+                      routeSubMode === "cercania"
+                        ? "bg-emerald-600 hover:bg-emerald-700"
+                        : ""
+                    }
+                  >
+                    <Radar className="size-4" />
+                    Cercanía
+                  </Button>
+                  <Button
+                    type="button"
+                    variant={routeSubMode === "trayecto" ? "default" : "outline"}
+                    onClick={() => switchRouteSubMode("trayecto")}
+                    className={
+                      routeSubMode === "trayecto"
+                        ? "bg-emerald-600 hover:bg-emerald-700"
+                        : ""
+                    }
+                  >
+                    <Navigation className="size-4" />
+                    Trayecto
+                  </Button>
+                </div>
+              </div>
 
-              {!routeMode ? (
-                <p className="py-4 text-center text-xs text-muted-foreground">
-                  Activa el modo para elegir un punto de inicio y descubrir los
-                  lugares más cercanos a visitar.
+              <p className="text-xs text-muted-foreground">
+                {routeSubMode === "cercania"
+                  ? "Elige un punto de inicio: se dibujarán dos círculos en el mapa, uno al punto más cercano y otro al más alejado de los que elijas."
+                  : "Elige un punto de inicio: la ruta saltará al punto más cercano de cada uno (N saltos) y la línea seguirá las calles."}
+              </p>
+
+              <label className="flex flex-col gap-1.5">
+                <span className="text-xs font-medium">Punto de inicio</span>
+                <select
+                  value={routeStartId ?? ""}
+                  onChange={(e) => {
+                    setRouteStartId(e.target.value || null);
+                    setRoutePath(null);
+                    setRouteSummary(null);
+                    setRouteError(null);
+                  }}
+                  className="h-9 rounded-md border bg-background px-2 text-sm"
+                >
+                  <option value="">Selecciona un punto...</option>
+                  {points.map((point) => (
+                    <option key={point.id} value={point.id}>
+                      {point.nameEs}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              <label className="flex flex-col gap-1.5">
+                <span className="text-xs font-medium">
+                  {routeSubMode === "cercania"
+                    ? "Número de lugares cercanos"
+                    : "Número de saltos"}
+                </span>
+                <select
+                  value={routeCount}
+                  onChange={(e) => {
+                    setRouteCount(Number(e.target.value));
+                    setRoutePath(null);
+                    setRouteSummary(null);
+                    setRouteError(null);
+                  }}
+                  className="h-9 rounded-md border bg-background px-2 text-sm"
+                >
+                  {[2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+              </label>
+
+              {routeLoading && (
+                <p className="flex items-center gap-2 text-xs text-muted-foreground">
+                  <Loader2 className="size-3.5 animate-spin" />
+                  Calculando ruta...
                 </p>
-              ) : (
-                <>
-                  <p className="text-xs text-muted-foreground">
-                    Selecciona el punto de inicio y cuántos lugares cercanos
-                    quieres visitar. La línea del mapa seguirá las calles.
-                  </p>
+              )}
 
-                  <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium">Punto de inicio</span>
-                    <select
-                      value={routeStartId ?? ""}
-                      onChange={(e) => {
-                        setRouteStartId(e.target.value || null);
-                        setRoutePath(null);
-                        setRouteSummary(null);
-                        setRouteError(null);
-                      }}
-                      className="h-9 rounded-md border bg-background px-2 text-sm"
-                    >
-                      <option value="">Selecciona un punto...</option>
-                      {points.map((point) => (
-                        <option key={point.id} value={point.id}>
-                          {point.nameEs}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
+              {routeError && (
+                <p className="text-xs text-destructive">{routeError}</p>
+              )}
 
-                  <label className="flex flex-col gap-1.5">
-                    <span className="text-xs font-medium">
-                      Número de lugares cercanos
+              {!routeStartId && !routeLoading && (
+                <p className="text-xs text-muted-foreground">
+                  También puedes hacer clic en un punto de la lista o del mapa
+                  para usarlo como inicio.
+                </p>
+              )}
+
+              {routeData && (
+                <div className="flex flex-col gap-1">
+                  <p className="text-xs font-medium">
+                    Desde{" "}
+                    <span className="text-emerald-600">
+                      {routeData.start.nameEs}
                     </span>
-                    <select
-                      value={routeCount}
-                      onChange={(e) => {
-                        setRouteCount(Number(e.target.value));
-                        setRoutePath(null);
-                        setRouteSummary(null);
-                        setRouteError(null);
+                    {routeSubMode === "cercania"
+                      ? `, los ${routeData.nearest.length} más cercanos:`
+                      : `, saltando al más cercano de cada punto (${routeData.nearest.length}):`}
+                  </p>
+                  {routeData.nearest.map((item, index) => (
+                    <div
+                      key={item.point.id}
+                      onClick={() => {
+                        setSelectedId(item.point.id);
                       }}
-                      className="h-9 rounded-md border bg-background px-2 text-sm"
-                    >
-                      {[2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
-                        <option key={n} value={n}>
-                          {n} lugares
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-
-                  {routeLoading && (
-                    <p className="flex items-center gap-2 text-xs text-muted-foreground">
-                      <Loader2 className="size-3.5 animate-spin" />
-                      Calculando ruta...
-                    </p>
-                  )}
-
-                  {routeError && (
-                    <p className="text-xs text-destructive">{routeError}</p>
-                  )}
-
-                  {!routeStartId && !routeLoading && (
-                    <p className="text-xs text-muted-foreground">
-                      También puedes hacer clic en un punto de la lista o del
-                      mapa para usarlo como inicio.
-                    </p>
-                  )}
-
-                  {routeData && (
-                    <div className="flex flex-col gap-1">
-                      <p className="text-xs font-medium">
-                        Desde{" "}
-                        <span className="text-emerald-600">
-                          {routeData.start.nameEs}
-                        </span>
-                        , los {routeData.nearest.length} más cercanos:
-                      </p>
-                      {routeData.nearest.map((item, index) => (
-                        <div
-                          key={item.point.id}
-                          onClick={() => {
-                            setSelectedId(item.point.id);
-                          }}
-                          className={cn(
-                            "flex cursor-pointer items-center gap-2 rounded-lg border p-2 transition-colors",
-                            selectedId === item.point.id
-                              ? "border-primary/40 bg-accent"
-                              : "border-transparent hover:bg-muted",
-                          )}
-                        >
-                          <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-[10px] font-semibold text-white">
-                            {index + 1}
-                          </span>
-                          <div className="min-w-0 flex-1">
-                            <p className="truncate text-sm">
-                              {item.point.nameEs}
-                            </p>
-                            <p className="truncate text-xs text-muted-foreground">
-                              {item.point.nameCa}
-                            </p>
-                          </div>
-                          <span className="shrink-0 text-xs text-muted-foreground">
-                            {formatKm(item.distKm)}
-                          </span>
-                        </div>
-                      ))}
-
-                      {routeSummary && (
-                        <div className="mt-1 flex items-center justify-between rounded-lg bg-muted px-3 py-2 text-xs">
-                          <span className="text-muted-foreground">
-                            Ruta andando (por calles)
-                          </span>
-                          <span className="font-medium">
-                            {(routeSummary.distanceMeters / 1000).toFixed(1)} km
-                            {" · "}
-                            {formatDuration(routeSummary.durationSeconds)}
-                          </span>
-                        </div>
+                      className={cn(
+                        "flex cursor-pointer items-center gap-2 rounded-lg border p-2 transition-colors",
+                        selectedId === item.point.id
+                          ? "border-primary/40 bg-accent"
+                          : "border-transparent hover:bg-muted",
                       )}
+                    >
+                      <span className="flex size-5 shrink-0 items-center justify-center rounded-full bg-emerald-600 text-[10px] font-semibold text-white">
+                        {index + 1}
+                      </span>
+                      <div className="min-w-0 flex-1">
+                        <p className="truncate text-sm">
+                          {item.point.nameEs}
+                        </p>
+                        <p className="truncate text-xs text-muted-foreground">
+                          {item.point.nameCa}
+                        </p>
+                      </div>
+                      <span className="shrink-0 text-xs text-muted-foreground">
+                        {formatKm(item.distKm)}
+                      </span>
+                    </div>
+                  ))}
 
-                      <p className="mt-1 text-[11px] text-muted-foreground/70">
-                        Las distancias de la lista son en línea recta; la línea
-                        del mapa sigue las calles.
-                      </p>
+                  {routeSubMode === "cercania" && (
+                    <div className="mt-1 flex items-center justify-between rounded-lg bg-muted px-3 py-2 text-xs">
+                      <span className="text-muted-foreground">
+                        Círculos:{" "}
+                        {routeData.nearest[0]
+                          ? formatKm(routeData.nearest[0].distKm)
+                          : "—"}{" "}
+                        al más cercano ·{" "}
+                        {routeData.nearest[routeData.nearest.length - 1]
+                          ? formatKm(
+                              routeData.nearest[routeData.nearest.length - 1]
+                                .distKm,
+                            )
+                          : "—"}{" "}
+                        al más alejado
+                      </span>
                     </div>
                   )}
-                </>
+
+                  {routeSubMode === "trayecto" && routeSummary && (
+                    <div className="mt-1 flex items-center justify-between rounded-lg bg-muted px-3 py-2 text-xs">
+                      <span className="text-muted-foreground">
+                        Ruta andando (por calles)
+                      </span>
+                      <span className="font-medium">
+                        {(routeSummary.distanceMeters / 1000).toFixed(1)} km
+                        {" · "}
+                        {formatDuration(routeSummary.durationSeconds)}
+                      </span>
+                    </div>
+                  )}
+
+                  <p className="mt-1 text-[11px] text-muted-foreground/70">
+                    {routeSubMode === "cercania"
+                      ? "Las distancias de la lista son en línea recta; los círculos del mapa usan esos radios."
+                      : "Las distancias de la lista son en línea recta; la línea del mapa sigue las calles."}
+                  </p>
+                </div>
               )}
             </div>
           )}
@@ -817,7 +972,7 @@ export default function Home() {
 
         <div className="flex items-center justify-between border-t px-4 py-2">
           <p className="text-xs text-muted-foreground">
-            {routeMode
+            {activeTab === "rutas"
               ? "Haz clic en un punto para usarlo como inicio"
               : "Haz clic en un punto para centrarlo"}
           </p>
@@ -835,11 +990,13 @@ export default function Home() {
 
       <main className="relative h-1/2 w-full md:h-full md:flex-1">
         <GoogleMap
-          points={filteredPoints}
+          points={mapPoints}
           selectedId={selectedId}
           onSelect={handleMapSelect}
-          routePath={routePath}
+          routePath={routeSubMode === "trayecto" ? routePath : null}
           routePointIds={routePointIds}
+          routeCircles={routeCircles}
+          hideLabels={hideLabels}
         />
       </main>
     </div>

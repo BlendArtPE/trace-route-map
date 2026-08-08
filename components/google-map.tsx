@@ -27,6 +27,11 @@ type GoogleMapProps = {
   onSelect?: (point: PlacePoint) => void;
   routePath?: google.maps.LatLngLiteral[] | null;
   routePointIds?: string[];
+  routeCircles?: {
+    center: google.maps.LatLngLiteral;
+    radii: number[];
+  } | null;
+  hideLabels?: boolean;
 };
 
 function pinContent(
@@ -40,10 +45,34 @@ function pinContent(
   return new google.maps.marker.PinElement({
     background,
     borderColor: "#ffffff",
-    glyph: String(index + 1),
+    glyphText: String(index + 1),
     glyphColor: "#ffffff",
     scale: active || route ? 1.15 : 1,
   }).element;
+}
+
+function computeCirclePaths(
+  center: google.maps.LatLngLiteral,
+  radii: number[]
+): google.maps.LatLngLiteral[][] {
+  return radii.map((radius) => {
+    const metersPerDegree = 111320;
+    const latRadius = radius / metersPerDegree;
+    const lngRadius =
+      radius /
+      (metersPerDegree *
+        Math.max(Math.cos((center.lat * Math.PI) / 180), 0.01));
+    const points: google.maps.LatLngLiteral[] = [];
+    const steps = 64;
+    for (let i = 0; i < steps; i++) {
+      const angle = (i / steps) * 2 * Math.PI;
+      points.push({
+        lat: center.lat + latRadius * Math.sin(angle),
+        lng: center.lng + lngRadius * Math.cos(angle),
+      });
+    }
+    return points;
+  });
 }
 
 export function GoogleMap({
@@ -52,14 +81,16 @@ export function GoogleMap({
   onSelect,
   routePath = null,
   routePointIds = [],
+  routeCircles = null,
+  hideLabels = false,
 }: GoogleMapProps) {
   const containerRef = useRef<HTMLDivElement | null>(null);
   const mapRef = useRef<google.maps.Map | null>(null);
   const markersRef = useRef<
     Map<string, google.maps.marker.AdvancedMarkerElement>
   >(new Map());
-  const polylineRef = useRef<google.maps.Polyline | null>(null);
   const routePolylineRef = useRef<google.maps.Polyline | null>(null);
+  const routeCirclesRef = useRef<google.maps.Polygon[] | null>(null);
   const fittedRef = useRef(false);
   const onSelectRef = useRef(onSelect);
 
@@ -148,30 +179,6 @@ export function GoogleMap({
   useEffect(() => {
     if (!mapReady || !mapRef.current) return;
     const map = mapRef.current;
-    if (routePath && routePath.length > 0) return;
-
-    const path = points.map((point) => ({ lat: point.lat, lng: point.lng }));
-    if (path.length >= 2) {
-      if (polylineRef.current) {
-        polylineRef.current.setPath(path);
-      } else {
-        polylineRef.current = new google.maps.Polyline({
-          path,
-          map,
-          strokeColor: "#3b82f6",
-          strokeOpacity: 0.8,
-          strokeWeight: 3,
-        });
-      }
-    } else if (polylineRef.current) {
-      polylineRef.current.setMap(null);
-      polylineRef.current = null;
-    }
-  }, [mapReady, points, routePath]);
-
-  useEffect(() => {
-    if (!mapReady || !mapRef.current) return;
-    const map = mapRef.current;
     const routePoly = routePolylineRef.current;
 
     if (!routePath || routePath.length === 0) {
@@ -199,6 +206,75 @@ export function GoogleMap({
     for (const p of path) bounds.extend(p);
     map.fitBounds(bounds, 60);
   }, [mapReady, routePath]);
+
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    const map = mapRef.current;
+
+    if (!routeCircles || routeCircles.radii.length === 0) {
+      if (routeCirclesRef.current) {
+        for (const circle of routeCirclesRef.current) circle.setMap(null);
+        routeCirclesRef.current = null;
+      }
+      return;
+    }
+
+    const existing = routeCirclesRef.current ?? [];
+    const paths = computeCirclePaths(routeCircles.center, routeCircles.radii);
+    const polygons: google.maps.Polygon[] = [];
+
+    paths.forEach((path, index) => {
+      if (existing[index]) {
+        existing[index].setPath(path);
+        polygons.push(existing[index]);
+      } else {
+        polygons.push(
+          new google.maps.Polygon({
+            map,
+            paths: path,
+            strokeColor: "#16a34a",
+            strokeOpacity: 0.6,
+            strokeWeight: 1.5,
+            fillColor: "#16a34a",
+            fillOpacity: 0.12,
+            clickable: false,
+          })
+        );
+      }
+    });
+
+    for (let i = paths.length; i < existing.length; i++) {
+      existing[i].setMap(null);
+    }
+    routeCirclesRef.current = polygons;
+
+    const bounds = new google.maps.LatLngBounds();
+    bounds.extend(routeCircles.center);
+    for (const path of paths) {
+      for (const point of path) bounds.extend(point);
+    }
+    map.fitBounds(bounds, 60);
+  }, [mapReady, routeCircles]);
+
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    mapRef.current.setOptions({
+      styles: hideLabels
+        ? [
+            {
+              featureType: "poi",
+              elementType: "labels",
+              stylers: [{ visibility: "off" }],
+            },
+            {
+              featureType: "transit",
+              elementType: "labels",
+              stylers: [{ visibility: "off" }],
+            },
+          ]
+        : [],
+    });
+  }, [mapReady, hideLabels]);
 
   useEffect(() => {
     if (!mapReady || !mapRef.current || fittedRef.current) return;
