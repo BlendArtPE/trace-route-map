@@ -1,5 +1,7 @@
 "use client";
 
+/// <reference types="google.maps" />
+
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   Castle,
@@ -116,7 +118,7 @@ function LabeledSwitch({ label, checked, onChange }: LabeledSwitchProps) {
       role="switch"
       aria-checked={checked}
       onClick={() => onChange(!checked)}
-      className="flex w-full items-center justify-between gap-2 text-left text-xs text-muted-foreground"
+      className="flex w-full items-center justify-between gap-2 text-left text-xs text-muted-foreground mt-2"
     >
       <span className="min-w-0">{label}</span>
       <span
@@ -220,8 +222,6 @@ export default function Home() {
   const [addingId, setAddingId] = useState<string | null>(null);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [searchError, setSearchError] = useState<string | null>(null);
-  const [newPointCategory, setNewPointCategory] =
-    useState<PlaceCategoryId>("cultural");
 
   const [activeTab, setActiveTab] = useState<"ubicaciones" | "categorias" | "rutas">(
     "ubicaciones",
@@ -455,7 +455,7 @@ export default function Home() {
       }
       const point: PlacePoint = {
         id: crypto.randomUUID(),
-        category: newPointCategory,
+        category: "cultural",
         nameEs: data.name,
         nameCa: data.name,
         address: data.address,
@@ -620,23 +620,6 @@ export default function Home() {
                 </ul>
               </div>
             )}
-
-            <label className="mt-2 flex items-center gap-2 text-xs text-muted-foreground">
-              <span className="shrink-0">Categoría al añadir:</span>
-              <select
-                value={newPointCategory}
-                onChange={(e) =>
-                  setNewPointCategory(e.target.value as PlaceCategoryId)
-                }
-                className="h-8 min-w-0 flex-1 rounded-md border bg-background px-2 text-sm text-foreground"
-              >
-                {PLACE_CATEGORIES.map((category) => (
-                  <option key={category.id} value={category.id}>
-                    {category.label}
-                  </option>
-                ))}
-              </select>
-            </label>
 
             <LabeledSwitch
               label="Ocultar los demás puntos al seleccionar"

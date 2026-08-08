@@ -1,5 +1,7 @@
 "use client";
 
+/// <reference types="google.maps" />
+
 import { importLibrary, setOptions } from "@googlemaps/js-api-loader";
 import { Loader2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
@@ -48,7 +50,7 @@ function pinContent(
     glyphText: String(index + 1),
     glyphColor: "#ffffff",
     scale: active || route ? 1.15 : 1,
-  }).element;
+  });
 }
 
 function computeCirclePaths(
@@ -159,9 +161,10 @@ export function GoogleMap({
           position,
           title: point.nameEs,
           zIndex: active ? 100 : 1,
+          gmpClickable: true,
           content: pinContent(point, index, active, inRoute),
         });
-        marker.addListener("click", () => {
+        marker.addEventListener("gmp-click", () => {
           onSelectRef.current?.(point);
         });
         markers.set(point.id, marker);
