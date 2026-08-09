@@ -672,11 +672,11 @@ export default function Home() {
   const hideLabelsSupported = !process.env.NEXT_PUBLIC_GOOGLE_MAPS_ID_KEY;
 
   return (
-    <div className="relative flex h-dvh w-full flex-col overflow-hidden bg-background md:flex-row">
+    <div className="relative flex h-dvh w-full flex-col overflow-hidden overscroll-y-contain bg-background md:flex-row">
       <aside
         ref={sheetRef}
         className={cn(
-          "absolute inset-x-0 bottom-0 z-20 flex flex-col overflow-hidden rounded-t-2xl border-t bg-card shadow-2xl",
+          "absolute inset-x-0 bottom-0 z-20 flex flex-col overflow-hidden overscroll-y-contain rounded-t-2xl border-t bg-card shadow-2xl",
           "md:static md:z-auto md:h-full md:w-[26rem] md:shrink-0 md:rounded-none md:border-r md:border-t-0 md:shadow-none",
           dragHeight == null && "transition-[height] duration-300 ease-in-out",
           dragHeight == null &&
@@ -1158,7 +1158,7 @@ export default function Home() {
         </div>
       </aside>
 
-      <main className="relative min-h-0 w-full flex-1">
+      <main className="relative min-h-0 w-full flex-1 overscroll-y-contain">
         <GoogleMap
           points={mapPoints}
           selectedId={selectedId}
