@@ -2,7 +2,15 @@
 
 /// <reference types="google.maps" />
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type KeyboardEvent as ReactKeyboardEvent,
+  type PointerEvent as ReactPointerEvent,
+} from "react";
 import {
   Castle,
   Church,
@@ -253,6 +261,72 @@ export default function Home() {
   const [locationError, setLocationError] = useState<string | null>(null);
 
   const searchTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  const PEEK_SHEET_HEIGHT = 96;
+  const SHEET_MAX_GAP = 16;
+
+  const [sheetExpanded, setSheetExpanded] = useState(false);
+  const [dragHeight, setDragHeight] = useState<number | null>(null);
+  const sheetRef = useRef<HTMLElement | null>(null);
+  const dragStartRef = useRef<{
+    startY: number;
+    baseHeight: number;
+  } | null>(null);
+  const dragHeightRef = useRef<number | null>(null);
+  const didDragRef = useRef(false);
+
+  const isMobileViewport = () =>
+    typeof window !== "undefined" &&
+    !window.matchMedia("(min-width: 768px)").matches;
+
+  const startSheetDrag = (e: ReactPointerEvent<HTMLDivElement>) => {
+    if (!isMobileViewport()) return;
+    const baseHeight = sheetRef.current?.offsetHeight ?? PEEK_SHEET_HEIGHT;
+    dragStartRef.current = { startY: e.clientY, baseHeight };
+    dragHeightRef.current = baseHeight;
+    setDragHeight(baseHeight);
+    didDragRef.current = false;
+    e.currentTarget.setPointerCapture(e.pointerId);
+  };
+
+  const onSheetDragMove = (e: ReactPointerEvent<HTMLDivElement>) => {
+    const drag = dragStartRef.current;
+    if (!drag) return;
+    const delta = drag.startY - e.clientY;
+    const maxHeight = window.innerHeight - SHEET_MAX_GAP;
+    const height = Math.min(
+      Math.max(drag.baseHeight + delta, PEEK_SHEET_HEIGHT),
+      maxHeight,
+    );
+    dragHeightRef.current = height;
+    setDragHeight(height);
+    if (Math.abs(delta) > 4) didDragRef.current = true;
+  };
+
+  const endSheetDrag = () => {
+    if (!dragStartRef.current) return;
+    const finalHeight = dragHeightRef.current ?? PEEK_SHEET_HEIGHT;
+    const maxHeight = window.innerHeight - SHEET_MAX_GAP;
+    dragStartRef.current = null;
+    dragHeightRef.current = null;
+    setDragHeight(null);
+    setSheetExpanded(finalHeight > (PEEK_SHEET_HEIGHT + maxHeight) / 2);
+  };
+
+  const onSheetHandleClick = () => {
+    if (didDragRef.current) {
+      didDragRef.current = false;
+      return;
+    }
+    setSheetExpanded((prev) => !prev);
+  };
+
+  const onSheetHandleKeyDown = (e: ReactKeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "Enter" || e.key === " ") {
+      e.preventDefault();
+      setSheetExpanded((prev) => !prev);
+    }
+  };
 
   useEffect(
     () => () => {
@@ -573,6 +647,7 @@ export default function Home() {
       setRouteError(null);
     }
     if (tab !== "categorias") setCategoryFilter(null);
+    if (isMobileViewport()) setSheetExpanded(true);
   };
 
   const clearAll = () => {
@@ -594,10 +669,43 @@ export default function Home() {
 
   const activeCategory = categoryFilter ? getCategory(categoryFilter) : null;
 
+  const hideLabelsSupported = !process.env.NEXT_PUBLIC_GOOGLE_MAPS_ID_KEY;
+
   return (
-    <div className="flex h-dvh w-full flex-col overflow-hidden bg-background md:flex-row">
-      <aside className="flex h-1/2 w-full flex-col border-b bg-card md:h-full md:w-[26rem] md:shrink-0 md:border-r md:border-b-0">
-        <div className="border-b px-4 py-3">
+    <div className="relative flex h-dvh w-full flex-col overflow-hidden bg-background md:flex-row">
+      <aside
+        ref={sheetRef}
+        className={cn(
+          "absolute inset-x-0 bottom-0 z-20 flex flex-col overflow-hidden rounded-t-2xl border-t bg-card shadow-2xl",
+          "md:static md:z-auto md:h-full md:w-[26rem] md:shrink-0 md:rounded-none md:border-r md:border-t-0 md:shadow-none",
+          dragHeight == null && "transition-[height] duration-300 ease-in-out",
+          dragHeight == null &&
+            (sheetExpanded ? "h-[calc(100dvh_-_1.5rem)]" : "h-24"),
+        )}
+        style={dragHeight != null ? { height: dragHeight } : undefined}
+      >
+        <div
+          role="button"
+          tabIndex={0}
+          aria-expanded={sheetExpanded}
+          aria-label="Desplegar u ocultar el panel"
+          onPointerDown={startSheetDrag}
+          onPointerMove={onSheetDragMove}
+          onPointerUp={endSheetDrag}
+          onPointerCancel={endSheetDrag}
+          onClick={onSheetHandleClick}
+          onKeyDown={onSheetHandleKeyDown}
+          className="flex shrink-0 cursor-grab touch-none select-none items-center justify-center py-2 active:cursor-grabbing md:hidden"
+        >
+          <span className="h-1 w-10 rounded-full bg-muted-foreground/40" />
+        </div>
+
+        <div
+          className={cn(
+            "border-b px-4 py-3",
+            sheetExpanded ? "block" : "hidden md:block",
+          )}
+        >
           <div className="flex items-center justify-between">
             <div>
               <h1 className="text-sm font-semibold">Puntos de ruta</h1>
@@ -608,15 +716,17 @@ export default function Home() {
             <Badge variant="secondary">{points.length}</Badge>
           </div>
           <div className="mt-2">
-            <LabeledSwitch
-              label="Ocultar nombres de otros lugares"
-              checked={hideLabels}
-              onChange={setHideLabels}
-            />
+            {hideLabelsSupported && (
+              <LabeledSwitch
+                label="Ocultar nombres de otros lugares"
+                checked={hideLabels}
+                onChange={setHideLabels}
+              />
+            )}
           </div>
         </div>
 
-        <div className="grid grid-cols-3 gap-1 border-b p-2">
+        <div className="grid shrink-0 grid-cols-3 gap-1 border-b p-2">
           <TabButton
             icon={MapPin}
             label="Ubicaciones"
@@ -638,7 +748,12 @@ export default function Home() {
         </div>
 
         {activeTab === "ubicaciones" && (
-          <div className="border-b p-3">
+          <div
+            className={cn(
+              "border-b p-3",
+              sheetExpanded ? "block" : "hidden md:block",
+            )}
+          >
             <div className="relative">
               <Search className="pointer-events-none absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input
@@ -712,7 +827,12 @@ export default function Home() {
           </div>
         )}
 
-        <ScrollArea className="min-h-0 flex-1">
+        <ScrollArea
+          className={cn(
+            "min-h-0 flex-1",
+            sheetExpanded ? "block" : "hidden md:block",
+          )}
+        >
           {activeTab === "ubicaciones" && (
             <div className="flex flex-col gap-1 p-3">
               {points.length === 0 ? (
@@ -1015,7 +1135,12 @@ export default function Home() {
           )}
         </ScrollArea>
 
-        <div className="flex items-center justify-between border-t px-4 py-2">
+        <div
+          className={cn(
+            "items-center justify-between border-t px-4 py-2",
+            sheetExpanded ? "flex" : "hidden md:flex",
+          )}
+        >
           <p className="text-xs text-muted-foreground">
             {activeTab === "rutas"
               ? "Haz clic en un punto para usarlo como inicio"
@@ -1033,7 +1158,7 @@ export default function Home() {
         </div>
       </aside>
 
-      <main className="relative h-1/2 w-full md:h-full md:flex-1">
+      <main className="relative min-h-0 w-full flex-1">
         <GoogleMap
           points={mapPoints}
           selectedId={selectedId}

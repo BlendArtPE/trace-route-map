@@ -3,7 +3,7 @@
 /// <reference types="google.maps" />
 
 import { importLibrary, setOptions } from "@googlemaps/js-api-loader";
-import { Loader2, LocateFixed } from "lucide-react";
+import { Loader2 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { getCategory, type PlacePoint } from "@/lib/places";
@@ -81,6 +81,72 @@ function computeCirclePaths(
   });
 }
 
+const LOCATE_ICON_SVG = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="2" x2="5" y1="12" y2="12"/><line x1="19" x2="22" y1="12" y2="12"/><line x1="12" x2="12" y1="2" y2="5"/><line x1="12" x2="12" y1="19" y2="22"/><circle cx="12" cy="12" r="7"/><circle cx="12" cy="12" r="3"/></svg>`;
+
+const LOCATE_SPINNER_SVG = `<svg width="20" height="20" viewBox="0 0 24 24" fill="none" class="animate-spin"><circle cx="12" cy="12" r="9" stroke="currentColor" stroke-width="2.5" opacity="0.25"/><path d="M21 12a9 9 0 0 0-9-9" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/></svg>`;
+
+function createLocateButton(): HTMLButtonElement {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.setAttribute("aria-label", "Ir a mi ubicación");
+  button.setAttribute("title", "Ir a mi ubicación");
+  Object.assign(button.style, {
+    width: "40px",
+    height: "40px",
+    borderRadius: "10px",
+    backgroundColor: "#ffffff",
+    border: "none",
+    boxShadow: "0 1px 6px rgba(0, 0, 0, 0.3)",
+    cursor: "pointer",
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "center",
+    padding: "0",
+    margin: "10px",
+    color: "#444746",
+    transition: "transform 0.1s ease",
+  });
+  button.innerHTML = LOCATE_ICON_SVG;
+  button.addEventListener("pointerdown", (e) => {
+    if (e.button === 0) button.style.transform = "scale(0.92)";
+  });
+  button.addEventListener("pointerup", () => {
+    button.style.transform = "";
+  });
+  button.addEventListener("pointerleave", () => {
+    button.style.transform = "";
+  });
+  return button;
+}
+
+function createMyLocationDot(): HTMLElement {
+  const root = document.createElement("div");
+  Object.assign(root.style, {
+    position: "relative",
+    width: "18px",
+    height: "18px",
+  });
+  const pulse = document.createElement("div");
+  Object.assign(pulse.style, {
+    position: "absolute",
+    inset: "0",
+    borderRadius: "9999px",
+    backgroundColor: "rgba(26, 115, 232, 0.35)",
+    animation: "my-location-pulse 2s ease-out infinite",
+  });
+  const dot = document.createElement("div");
+  Object.assign(dot.style, {
+    position: "absolute",
+    inset: "0",
+    borderRadius: "9999px",
+    backgroundColor: "#1a73e8",
+    border: "2px solid #ffffff",
+    boxShadow: "0 1px 4px rgba(0, 0, 0, 0.3)",
+  });
+  root.append(pulse, dot);
+  return root;
+}
+
 export function GoogleMap({
   points,
   selectedId,
@@ -102,6 +168,11 @@ export function GoogleMap({
   const routeCirclesRef = useRef<google.maps.Polygon[] | null>(null);
   const fittedRef = useRef(false);
   const onSelectRef = useRef(onSelect);
+  const onLocateMeRef = useRef(onLocateMe);
+  const myLocationButtonRef = useRef<HTMLButtonElement | null>(null);
+  const myLocationMarkerRef = useRef<google.maps.marker.AdvancedMarkerElement | null>(
+    null,
+  );
   const pendingLocateRef = useRef(false);
 
   const [mapReady, setMapReady] = useState(false);
@@ -109,6 +180,7 @@ export function GoogleMap({
 
   useEffect(() => {
     onSelectRef.current = onSelect;
+    onLocateMeRef.current = onLocateMe;
   });
 
   useEffect(() => {
@@ -125,11 +197,29 @@ export function GoogleMap({
           zoom: 13,
           mapId: mapId,
           gestureHandling: "greedy",
-          mapTypeControl: true,
-          fullscreenControl: true,
-          streetViewControl: true,
+          zoomControlOptions: {
+            position: google.maps.ControlPosition.RIGHT_TOP,
+          },
+          fullscreenControlOptions: {
+            position: google.maps.ControlPosition.TOP_RIGHT,
+          },
+          streetViewControl: false,
+          mapTypeControl: false,
         });
         mapRef.current = map;
+
+        const locateButton = createLocateButton();
+        locateButton.addEventListener("click", () => {
+          pendingLocateRef.current = true;
+          onLocateMeRef.current?.();
+        });
+        myLocationButtonRef.current = locateButton;
+        const position =
+          window.matchMedia("(min-width: 768px)").matches === false
+            ? google.maps.ControlPosition.RIGHT_TOP
+            : google.maps.ControlPosition.RIGHT_BOTTOM;
+        map.controls[position].push(locateButton);
+
         setMapReady(true);
       })
       .catch((error: unknown) => {
@@ -268,7 +358,7 @@ export function GoogleMap({
   }, [mapReady, routeCircles]);
 
   useEffect(() => {
-    if (!mapReady || !mapRef.current) return;
+    if (!mapReady || !mapRef.current || mapId) return;
     mapRef.current.setOptions({
       styles: hideLabels
         ? [
@@ -286,6 +376,51 @@ export function GoogleMap({
         : [],
     });
   }, [mapReady, hideLabels]);
+
+  useEffect(() => {
+    const button = myLocationButtonRef.current;
+    if (!button) return;
+    button.disabled = locatingMe;
+    button.style.opacity = locatingMe ? "0.7" : "1";
+    button.innerHTML = locatingMe ? LOCATE_SPINNER_SVG : LOCATE_ICON_SVG;
+  }, [locatingMe]);
+
+  useEffect(() => {
+    if (!mapReady || !mapRef.current) return;
+    const map = mapRef.current;
+    if (!myPosition) {
+      if (myLocationMarkerRef.current) {
+        myLocationMarkerRef.current.map = null;
+        myLocationMarkerRef.current = null;
+      }
+      return;
+    }
+    if (!myLocationMarkerRef.current) {
+      myLocationMarkerRef.current = new google.maps.marker.AdvancedMarkerElement(
+        {
+          map,
+          position: myPosition,
+          content: createMyLocationDot(),
+          zIndex: 300,
+        },
+      );
+    } else {
+      myLocationMarkerRef.current.position = myPosition;
+    }
+  }, [mapReady, myPosition]);
+
+  useEffect(() => {
+    if (!mapReady || !mapRef.current || !myPosition) return;
+    if (!pendingLocateRef.current) return;
+    pendingLocateRef.current = false;
+    const map = mapRef.current;
+    map.panTo(myPosition);
+    if ((map.getZoom() ?? 12) < 15) map.setZoom(15);
+  }, [mapReady, myPosition]);
+
+  useEffect(() => {
+    if (!locatingMe && !myPosition) pendingLocateRef.current = false;
+  }, [locatingMe, myPosition]);
 
   useEffect(() => {
     if (!mapReady || !mapRef.current || fittedRef.current) return;
@@ -307,19 +442,6 @@ export function GoogleMap({
     map.panTo({ lat: point.lat, lng: point.lng });
     if ((map.getZoom() ?? 12) < 13) map.setZoom(13);
   }, [mapReady, points, selectedId]);
-
-  useEffect(() => {
-    if (!mapReady || !mapRef.current || !myPosition) return;
-    if (!pendingLocateRef.current) return;
-    pendingLocateRef.current = false;
-    const map = mapRef.current;
-    map.panTo(myPosition);
-    if ((map.getZoom() ?? 12) < 15) map.setZoom(15);
-  }, [mapReady, myPosition]);
-
-  useEffect(() => {
-    if (!locatingMe && !myPosition) pendingLocateRef.current = false;
-  }, [locatingMe, myPosition]);
 
   return (
     <div className="relative h-full w-full">
@@ -347,24 +469,6 @@ export function GoogleMap({
           </p>
         </div>
       ) : null}
-      {apiKey && mapReady && !loadError && (
-        <button
-          type="button"
-          onClick={() => {
-            pendingLocateRef.current = true;
-            onLocateMe?.();
-          }}
-          className="absolute right-3 bottom-3 z-10 flex size-9 items-center justify-center rounded-md border border-border bg-white text-foreground shadow-md transition-colors hover:bg-gray-100"
-          aria-label="Ir a mi ubicación"
-          title="Ir a mi ubicación"
-        >
-          {locatingMe ? (
-            <Loader2 className="size-4 animate-spin" />
-          ) : (
-            <LocateFixed className="size-4" />
-          )}
-        </button>
-      )}
     </div>
   );
 }
